@@ -248,8 +248,8 @@ pub const Reader = struct {
 
     ///
     pub fn deinit(self: *Reader) void {
-        self.allocator.free(ret.current);
-        self.allocator.free(ret.header);
+        self.allocator.free(self.current);
+        self.allocator.free(self.header);
     }
 
     ///

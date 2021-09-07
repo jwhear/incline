@@ -56,11 +56,15 @@ pub const Database = struct {
     }
 
     ///
-    pub fn truncate(self: *Database, tableName: []const u8) !void {
-        var buf: [1024]u8 = undefined;
-        const query = try std.fmt.bufPrintZ(buf[0..],
-                                 "TRUNCATE TABLE {s};", .{tableName});
-        _ = try self.exec(query);
+    pub fn execFormat(self: *Database, comptime command_fmt: []const u8, args: anytype) !Result {
+        const command = try std.fmt.allocPrintZ(self.allocator, command_fmt, args);
+        defer self.allocator.free(command);
+        return self.exec(command);
+    }
+
+    ///
+    pub fn truncate(self: *Database, table_name: []const u8) !void {
+        (try self.execFormat("TRUNCATE TABLE {s};", .{table_name})).clear();
     }
 
     ///
@@ -86,7 +90,7 @@ pub const Database = struct {
 
         const query = try builder.toOwnedSliceSentinel(0);
         defer self.allocator.free(query);
-        _ = try self.exec(query);
+        (try self.exec(query)).clear();
     }
 
     ///
@@ -100,9 +104,8 @@ pub const Database = struct {
         \\WHERE table_schema = '{s}' AND
         \\      table_name = '{s}';
         ;
-        var buf: [1024]u8 = undefined;
-        const query = try std.fmt.bufPrintZ(buf[0..], fmt, .{schema, table});
-        var res = try self.exec(query);
+        var res = try self.execFormat(fmt, .{schema, table});
+        defer res.clear();
         return res.len() > 0;
     }
 };
