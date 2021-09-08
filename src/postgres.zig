@@ -55,6 +55,16 @@ pub const Database = struct {
         return Result.init(PQexec(self.conn, command.ptr));
     }
 
+    pub fn execNoResult(self: *Database, command: [:0]const u8) !void {
+        if (self.show_queries) {
+            std.debug.print("QUERY: {s}\n", .{command});
+        }
+        // We'll instantiate a Result because that's where the error handling
+        //  takes place
+        var res = try Result.init(PQexec(self.conn, command.ptr));
+        res.clear();
+    }
+
     ///
     pub fn execFormat(self: *Database, comptime command_fmt: []const u8, args: anytype) !Result {
         const command = try std.fmt.allocPrintZ(self.allocator, command_fmt, args);
