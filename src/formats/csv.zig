@@ -49,15 +49,15 @@ pub const BufferTokenizer = struct {
         };
 
         // Get a file descriptor and check the size of the file
-        ret.fd = try os.open(path, os.O_RDONLY, 0);
+        ret.fd = try os.open(path, os.O.RDONLY, 0);
         const st = try os.fstat(ret.fd);
         const fileLen = st.size;
 
         // Memory map the file into buffer
         ret.buffer = try os.mmap(null,
                                  @intCast(u64, fileLen),
-                                 os.PROT_READ,  // prot
-                                 os.MAP_SHARED, // flags
+                                 os.PROT.READ,  // prot
+                                 os.MAP.SHARED, // flags
                                  ret.fd,
                                  0   // offset
                                  );
@@ -698,7 +698,7 @@ pub fn Writer(comptime Out: type) type {
 
         ///
         pub fn writeRecord(self: *Self, record: anytype) !void {
-            const Type = comptime @TypeOf(value);
+            const Type = comptime @TypeOf(record);
             switch (@typeInfo(Type)) {
                 .Array => {
                     for (record) |value| {

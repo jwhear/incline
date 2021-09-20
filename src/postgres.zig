@@ -1,4 +1,4 @@
-usingnamespace @cImport({
+const pq = @cImport({
     @cInclude("postgresql/libpq-fe.h");
 });
 
@@ -6,14 +6,14 @@ const std = @import("std");
 
 ///
 pub const Database = struct {
-    conn: *PGconn = undefined,
+    conn: *pq.PGconn = undefined,
     allocator: *std.mem.Allocator,
     show_queries: bool = false,
 
     ///
     pub fn connect(info: []const u8, allocator: *std.mem.Allocator) !Database {
-        var conn = PQconnectdb(info.ptr);
-        if (PQstatus(conn) != CONNECTION_OK) {
+        var conn = pq.PQconnectdb(info.ptr);
+        if (pq.PQstatus(conn) != pq.CONNECTION_OK) {
             //std.debug.print("Failed to connect: \n{s}",
                             //.{ PQerrorMessage(conn) });
             return error.postgres_connect_failed;
@@ -44,7 +44,7 @@ pub const Database = struct {
 
     ///
     pub fn finish(self: *Database) void {
-        PQfinish(self.conn);
+        pq.PQfinish(self.conn);
     }
 
     ///
@@ -52,7 +52,7 @@ pub const Database = struct {
         if (self.show_queries) {
             std.debug.print("QUERY: {s}\n", .{command});
         }
-        return Result.init(PQexec(self.conn, command.ptr));
+        return Result.init(pq.PQexec(self.conn, command.ptr));
     }
 
     pub fn execNoResult(self: *Database, command: [:0]const u8) !void {
@@ -61,7 +61,7 @@ pub const Database = struct {
         }
         // We'll instantiate a Result because that's where the error handling
         //  takes place
-        var res = try Result.init(PQexec(self.conn, command.ptr));
+        var res = try Result.init(pq.PQexec(self.conn, command.ptr));
         res.clear();
     }
 
@@ -122,20 +122,20 @@ pub const Database = struct {
 
 ///
 pub const Result = struct {
-    handle: *PGresult,
+    handle: *pq.PGresult,
 
     ///
-    pub fn init(h: ?*PGresult) !Result {
-        switch (PQresultStatus(h)) {
-            PGRES_EMPTY_QUERY, PGRES_COMMAND_OK, PGRES_TUPLES_OK,
-            PGRES_COPY_OUT, PGRES_COPY_IN, PGRES_COPY_BOTH,
-            PGRES_NONFATAL_ERROR, PGRES_SINGLE_TUPLE =>
+    pub fn init(h: ?*pq.PGresult) !Result {
+        switch (pq.PQresultStatus(h)) {
+            pq.PGRES_EMPTY_QUERY, pq.PGRES_COMMAND_OK, pq.PGRES_TUPLES_OK,
+            pq.PGRES_COPY_OUT, pq.PGRES_COPY_IN, pq.PGRES_COPY_BOTH,
+            pq.PGRES_NONFATAL_ERROR, pq.PGRES_SINGLE_TUPLE =>
                 return Result{ .handle=h orelse return error.postgres_query_error },
 
             else => {
                 std.debug.print("Query error:\n{s}",
-                               .{PQresultErrorMessage(h)});
-                PQclear(h);
+                               .{pq.PQresultErrorMessage(h)});
+                pq.PQclear(h);
                 return error.postgres_query_error;
             }
         }
@@ -143,31 +143,31 @@ pub const Result = struct {
 
     ///
     pub fn clear(self: *Result) void {
-        PQclear(self.handle);
+        pq.PQclear(self.handle);
     }
 
     ///
     pub fn hasData(self: *const Result) bool {
-        return switch (PQresultStatus(self.handle)) {
-            PGRES_TUPLES_OK, PGRES_SINGLE_TUPLE => true,
+        return switch (pq.PQresultStatus(self.handle)) {
+            pq.PGRES_TUPLES_OK, pq.PGRES_SINGLE_TUPLE => true,
             else => false,
         };
     }
 
     ///
     pub fn len(self: *const Result) i32 {
-        return PQntuples(self.handle);
+        return pq.PQntuples(self.handle);
     }
 
     ///
     pub fn nFields(self: *const Result) i32 {
-        return PQnfields(self.handle);
+        return pq.PQnfields(self.handle);
     }
 
     ///
     pub fn get(self: *const Result, row: i32, col: i32) []const u8 {
-        const data_len = @intCast(usize, PQgetlength(self.handle, row, col));
-        const data = PQgetvalue(self.handle, row, col);
+        const data_len = @intCast(usize, pq.PQgetlength(self.handle, row, col));
+        const data = pq.PQgetvalue(self.handle, row, col);
         return data[0..data_len];
     }
 
@@ -241,7 +241,7 @@ pub const Result = struct {
 
     ///
     pub fn isNull(self: *const Result, row: i32, col: i32) bool {
-        return PQgetisnull(self.handle, row, col) == 1;
+        return pq.PQgetisnull(self.handle, row, col) == 1;
     }
 
     ///
