@@ -118,6 +118,28 @@ pub const Database = struct {
         defer res.clear();
         return res.len() > 0;
     }
+
+    /// Locates all indices on `table_name` and drops them.
+    /// This is useful before bulk inserts.  Note that you do not need to
+    ///  do this if DROPing the table--Postgres automatically drops indices
+    ///  of dropped tables.
+    pub fn dropIndicesOn(self: *Database, table_name: []const u8) !void {
+        const indices = try self.execFormat(
+            \\SELECT cls.relname
+            \\FROM pg_index idx
+            \\JOIN pg_class cls ON cls.oid=idx.indexrelid
+            \\JOIN pg_class tab ON tab.oid=idx.indrelid
+            \\JOIN pg_am am ON am.oid=cls.relam
+            \\WHERE tab.relname = '{s}';
+            , .{ table_name }
+        );
+        defer indices.clear();
+
+        var i: i32 = indices.len();
+        while (i > 0) : (i += 1) {
+            try db.execFormat("DROP INDEX {s};", .{ indices.get(i, 1) });
+        }
+    }
 };
 
 ///
