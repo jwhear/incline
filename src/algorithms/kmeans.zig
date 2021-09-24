@@ -1,4 +1,5 @@
 const std = @import("std");
+const utils = @import("../matrix_utils.zig");
 
 /// Algorithm for computing centroids of a dataset and point membership of
 ///  those centroids.
@@ -150,7 +151,7 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
 
         /// Initializes the centroids array with random points from data
         pub fn initializeCentroids(self: *Self) void {
-            var centroids = stride(self.centroid_array, self.n_features);
+            var centroids = utils.stride(self.centroid_array, self.n_features);
             while (centroids.next()) |centroid| {
                 self.randomCentroid(centroid);
             }
@@ -161,7 +162,7 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
         fn randomCentroid(self: *Self, out: []DataT) void {
             std.debug.assert(out.len == self.n_features);
             const i = self.random.uintLessThan(usize, self.n_rows);
-            const row = stride(self.data, self.n_features).i(i);
+            const row = utils.stride(self.data, self.n_features).i(i);
             std.mem.copy(DataT, out, row);
         }
 
@@ -179,15 +180,15 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
             // Clear the centroid working space
             std.mem.set(DataT, self.scratch_centroid_array, 0);
             std.mem.set(usize, self.centroid_counts, 0);
-            var new_centroids = stride(self.scratch_centroid_array, self.n_features);
+            var new_centroids = utils.stride(self.scratch_centroid_array, self.n_features);
 
             // Label each row, calculating new centroid points as we go
-            var rows = stride(self.data, self.n_features);
+            var rows = utils.stride(self.data, self.n_features);
             var row_i: usize = 0;
             while (rows.next()) |row| : (row_i += 1) {
 
                 // Compute dist to each centroid, pick closest
-                var centroids = stride(self.centroid_array, self.n_features);
+                var centroids = utils.stride(self.centroid_array, self.n_features);
                 // prime with the first centroid
                 var nearest: LabelT = 0;
                 var nearest_dist = distance(centroids.i(0), row);
@@ -246,64 +247,6 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
 
 }
 
-/// Produces a function that takes vectors of T and returns the square of the
-///  Euclidean distance between a and b.
-pub fn EuclideanSquared(comptime T: type) fn([]const T, []const T) T {
-    return struct {
-        pub fn f(a: []const T, b: []const T) T {
-            std.debug.assert(a.len == b.len);
-
-            var accum: T = 0;
-            for (a) |av, i| {
-                accum += std.math.pow(T, av - b[i], 2);
-            }
-            return accum;
-        }
-    }.f;
-}
-
-fn Stride(comptime Slice: type) type {
-    return struct{
-        const Self = @This();
-
-        data: Slice, // should be evenly divisible by `s`
-        index: usize,  // current index
-        s: usize,  // stride
-
-        pub fn next(self: *Self) ?Slice {
-            if (self.index >= self.data.len) return null;
-            var ret = self.data[self.index .. self.index+self.s];
-            self.index += self.s;
-            return ret;
-        }
-
-        pub fn len(self: *const Self) usize {
-            return self.data.len / self.s;
-        }
-
-        pub fn reset(self: *Self) void {
-            self.index = 0;
-        }
-
-        pub fn set(self: *Self, idx: usize) void {
-            self.index = idx * self.s;
-        }
-
-        pub fn i(self: *const Self, idx: usize) Slice {
-            const index = idx * self.s;
-            return self.data[index .. index + self.s];
-        }
-    };
-}
-
-fn stride(data: anytype, by: usize) Stride(@TypeOf(data)) {
-    return Stride(@TypeOf(data)){
-        .data = data,
-        .index = 0,
-        .s = by,
-    };
-}
-
 test "basic usage" {
     var allocator = std.testing.allocator;
 
@@ -319,7 +262,8 @@ test "basic usage" {
         v.* = r.float(f32) * 100;
     }
 
-    var kmeans = try KMeans(f32, u8, comptime EuclideanSquared(f32)).init(allocator, r, data, n_features, n_centroids);
+    var kmeans = try KMeans(f32, u8, comptime utils.EuclideanSquared(f32))
+                      .init(allocator, r, data, n_features, n_centroids);
     defer kmeans.deinit(allocator);
     const converged = kmeans.run(100);
     //std.debug.print("Converged? {}\n", .{ converged });
@@ -327,7 +271,7 @@ test "basic usage" {
 
     //const writer = std.io.getStdOut().writer();
     //try writer.print("x,y,label\n", .{});
-    //var strider = stride(data, 2);
+    //var strider = utils.stride(data, 2);
     //var row_i: usize = 0;
     //while (strider.next()) |row| : (row_i += 1) {
         //try writer.print("{d:.2},{d:.2},{}\n", .{ row[0], row[1], kmeans.labels[row_i] });

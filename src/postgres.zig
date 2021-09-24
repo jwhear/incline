@@ -137,7 +137,7 @@ pub const Database = struct {
 
         var i: i32 = indices.len();
         while (i > 0) : (i += 1) {
-            try db.execFormat("DROP INDEX {s};", .{ indices.get(i, 1) });
+            try self.execFormat("DROP INDEX {s};", .{ indices.get(i, 1) });
         }
     }
 };
