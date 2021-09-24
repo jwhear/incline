@@ -1,47 +1,87 @@
 const std = @import("std");
 
-pub fn main() !void {
-    var allocator = std.heap.c_allocator;
-
-    const n_rows = 10_000;
-    const n_features = 2;
-    const n_centroids = 8;
-    var r = &std.rand.DefaultPrng.init(0).random;
-
-    var data = try allocator.alloc(f32, n_rows * n_features);
-    for (data) |*v| {
-        v.* = r.float(f32) * 100;
-    }
-
-    var kmeans = try KMeans(f32, u8, euclideanSquared).init(allocator, data, n_features, n_centroids);
-    defer kmeans.deinit(allocator);
-    std.debug.print("Converged? {}\n", kmeans.run());
-
-    const writer = std.io.getStdOut().writer();
-    try writer.print("x,y,label\n", .{});
-    var strider = stride(data, 2);
-    var row_i: usize = 0;
-    while (strider.next()) |row| : (row_i += 1) {
-        try writer.print("{d:.2},{d:.2},{}\n", .{ row[0], row[1], kmeans.labels[row_i] });
-    }
-}
-
-///TODO use running mean instead (https://nullbuffer.com/articles/welford_algorithm.html)
-///  might be able to get rid of the centroid_counts array?
+/// Algorithm for computing centroids of a dataset and point membership of
+///  those centroids.
+/// `DataT` is the type of the elements of the dataset and should be a real number type.
+/// `LabelT` is the type of the labels and should be a integer type large enough
+///   to hold the number of desired centroids.
+/// `distance` is a function taking two vectors of `DataT` and returning the
+///   distance (also of type DataT).
 ///
-/// The random number generator and/or seed can be controlled by setting/changing `.random`
+/// The type returned should be initialized with either `init` or `initNoAlloc`.
+/// If using `initNoAlloc`, the caller must allocate certain arrays (see the
+///  documentation for (`initNoAlloc`) and should _not_ call `deinit`.
+/// If using `init`, the provided allocator will be used and a matching call
+///  to `deinit` should be performed when the computation is done and the
+///  results are no longer needed.  Note that this type performs no heap allocations
+///  outside of `init`.
+///
+/// This type uses a number of matrices, all of which are row-major:
+///  * .data is a [n_rows x n_features] and contains the input data points.
+///  * .labels is a vector [n_rows] and contains the current label for each
+///      point in `data`.
+///  * .centroid_array is a matrix [n_centroids x n_features] and contains
+///      the current point for each centroid.
+///  * .centroid_counts is a vector [n_centroids] and contains the current
+///      number of points labeled with that centroid.
+///  * .scratch_centroid_array is a working space buffer.
+///
+/// General usage:
+/// ```
+/// var kmeans = try KMeans(f32, u8, comptime EuclideanSquared(f32))
+///                    .init(allocator, random, data, n_features, n_centroids);
+/// const converged: bool = kmeans.run(1_000);
+/// // Use kmeans.labels, kmeans.centroid_array, and kmeans.centroid_counts...
+/// kmeans.deinit(allocator);
+/// ```
+///
+/// By reifying this algorithm to a structure and separating the various
+///  stages, the user can customize one or more stages.  Here's an example of
+///  more customized usage:
+/// ```
+/// var kmeans = try KMeans(f32, u8, comptime EuclideanSquared(f32))
+///                    .initNoAlloc(random, data, n_features, n_centroids);
+///
+/// // Provide these arrays however you like (e.g. reusing previous allocations)
+/// kmeans.labels = try myAllocator.alloc(u8, n_rows);
+/// kmeans.centroid_array = try myAllocator.alloc(DataT, n_centroids * n_features);
+/// kmeans.centroid_counts = myAllocator.alloc(usize, n_centroids);
+/// kmeans.scratch_centroid_array = myAllocator.alloc(DataT, n_centroids * n_features);
+///
+/// // The built-in method picks random points from `data` for the initial centroids
+/// //  but you could provide them yourself using some fancy technique or other
+/// if (fancy_centroids) {
+///     kmeans.centroid_array = getSomeFancyCentroids();
+///     kmeans.centroids_are_initialized = true;
+/// } else {
+///     kmeans.initializeCentroids();
+/// }
+///
+/// // The `run` method iterates until the max iterations parameter is reached or
+/// //  the algorithm converges.  You can take control of this by using the
+/// //  `iterate` method to perform a single iteration at a time.  It returns
+/// //  true if more iterations are needed for convergence.
+/// while (kmeans.iterate()) {
+///    // print out intermediate results, tinker with the internal state, etc.
+/// }
+/// ```
+///
+/// Numeric stability:
+/// This implementation uses the Welford method for computing the new centroids
+///  during the single pass (per iteration) over the data.  This should be much
+///  more robust against precision loss than the naive method.
 pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn([]DataT, []DataT) DataT) type {
     return struct {
-        ///
+        /// The input data array [n_rows x n_features]
         data: []DataT,
-        ///
+        /// The number of rows in `data`
         n_rows: usize,
-        ///
+        /// The number of features (columns) in `data`
         n_features: usize,
-        ///
+        /// The desired number of centroids
         n_centroids: usize,
 
-        ///
+        /// Only used for picking initial centroids or replacing defunct ones
         random: *std.rand.Random,
 
         // Allocated fields
@@ -54,14 +94,11 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
         /// The number of points associated with each centroid [n_centroids]
         centroid_counts: []usize,
 
-        /// Contains the minimum value for each feature [n_features]
-        mins: []DataT,
-
-        /// Contains the maximum value for each feature [n_features]
-        maxs: []DataT,
-
         /// Working space for computing new centroid points as a row-major matrix [n_centroids x n_features]
         scratch_centroid_array: []DataT,
+
+        /// Whether the centroids have been initialized
+        centroids_are_initialized: bool = false,
 
 
         const Self = @This();
@@ -73,36 +110,32 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
         ///  .labels: []LabelT (n_rows)
         ///  .centroid_array: []DataT (n_centroids * n_features)
         ///  .centroid_counts: []usize (n_centroids)
-        ///  .mins: []DataT (n_features)
-        ///  .maxs: []DataT (n_features)
         ///  .scratch_centroid_array: []DataT (n_centroids * n_features)
         ///
         /// If managing this memory yourself, do not call deinit()
-        pub fn initNoAlloc(data: []DataT, n_features: usize, n_centroids: usize) Self {
+        pub fn initNoAlloc(random: *std.rand.Random,data: []DataT,
+                           n_features: usize, n_centroids: usize) Self {
             return Self{
                 .data = data,
                 .n_rows = data.len / n_features,
                 .n_features = n_features,
                 .n_centroids = n_centroids,
-                .random = &std.rand.DefaultPrng.init(0).random,
+                .random = random,
                 .labels = undefined,
                 .centroid_array = undefined,
                 .centroid_counts = undefined,
-                .mins = undefined,
-                .maxs = undefined,
                 .scratch_centroid_array = undefined,
             };
         }
 
         /// Initializes this algorithm using the provided allocator.  Caller should
         ///  use `deinit()` with the same allocator to free when done.
-        pub fn init(allocator: *std.mem.Allocator, data: []DataT, n_features: usize, n_centroids: usize) !Self {
-            var me = Self.initNoAlloc(data, n_features, n_centroids);
-            me.labels = try allocator.alloc(LabelT, me.n_rows);
-            me.centroid_array = try allocator.alloc(DataT, me.n_centroids * me.n_features);
-            me.centroid_counts = try allocator.alloc(usize, me.n_centroids);
-            me.mins = try allocator.alloc(DataT, me.n_features);
-            me.maxs = try allocator.alloc(DataT, me.n_features);
+        pub fn init(allocator: *std.mem.Allocator, random: *std.rand.Random,
+                    data: []DataT, n_features: usize, n_centroids: usize) !Self {
+            var me = Self.initNoAlloc(random, data, n_features, n_centroids);
+            me.labels                 = try allocator.alloc(LabelT, me.n_rows);
+            me.centroid_array         = try allocator.alloc(DataT, me.n_centroids * me.n_features);
+            me.centroid_counts        = try allocator.alloc(usize, me.n_centroids);
             me.scratch_centroid_array = try allocator.alloc(DataT, me.n_centroids * me.n_features);
             return me;
         }
@@ -112,56 +145,38 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
             allocator.free(self.labels);
             allocator.free(self.centroid_array);
             allocator.free(self.centroid_counts);
-            allocator.free(self.mins);
-            allocator.free(self.maxs);
             allocator.free(self.scratch_centroid_array);
         }
 
-        /// Populates .mins and .maxs with bounds information for all features
-        pub fn computeBounds(self: *Self) void {
-            std.debug.assert(self.mins.len == self.n_features);
-            std.debug.assert(self.maxs.len == self.n_features);
-
-            var rows = stride(self.data, self.n_features);
-
-            // prime with the first row of data
-            if (rows.next()) |row| {
-                std.mem.copy(DataT, self.mins, row);
-                std.mem.copy(DataT, self.maxs, row);
-            }
-
-            while (rows.next()) |row| {
-                for (row) |v, feature_i| {
-                    self.mins[feature_i] = std.math.min(v, self.mins[feature_i]);
-                    self.maxs[feature_i] = std.math.max(v, self.maxs[feature_i]);
-                }
-            }
-        }
-
-        /// Initializes the centroids array with random points within the bounds
+        /// Initializes the centroids array with random points from data
         pub fn initializeCentroids(self: *Self) void {
-            std.debug.assert(self.centroid_array.len == self.n_features * self.n_centroids);
-
             var centroids = stride(self.centroid_array, self.n_features);
             while (centroids.next()) |centroid| {
                 self.randomCentroid(centroid);
             }
+            self.centroids_are_initialized = true;
         }
 
+        // Picks a random point from `data` and writes it to `out`
         fn randomCentroid(self: *Self, out: []DataT) void {
-            for (out) |*v, feature_i| {
-                const scale = self.maxs[feature_i] - self.mins[feature_i];
-                v.* = self.random.float(DataT) * scale + self.mins[feature_i];
-            }
+            std.debug.assert(out.len == self.n_features);
+            const i = self.random.uintLessThan(usize, self.n_rows);
+            const row = stride(self.data, self.n_features).i(i);
+            std.mem.copy(DataT, out, row);
         }
 
-        /// Performs a single iteration of the kmeans algorithm returning false
-        ///  if the algorithm has converged and will no longer be altered by
-        ///  additional calls to this function.
+        /// Performs a single iteration of the kmeans algorithm.
+        /// Returns false if the algorithm has converged and will no longer be
+        ///  altered by additional calls to this function.
         pub fn iterate(self: *Self) bool {
+
+            if (!self.centroids_are_initialized)
+                self.initializeCentroids();
+
+            // Assume converged; if a point's label changes, set to false
             var converged: bool = true;
 
-            // Clear our centroid working space
+            // Clear the centroid working space
             std.mem.set(DataT, self.scratch_centroid_array, 0);
             std.mem.set(usize, self.centroid_counts, 0);
             var new_centroids = stride(self.scratch_centroid_array, self.n_features);
@@ -189,34 +204,31 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
 
                 // Does this point need to change label?
                 if (self.labels[row_i] != nearest) {
-                    converged = false;
                     self.labels[row_i] = nearest;
+                    converged = false;
                 }
 
                 // Add this point to the accumulator for this centroid
-                // TODO: Welford's algorithm
-                for (new_centroids.i(nearest)) |*v, feature_i| {
-                    v.* += row[feature_i];
-                }
+                // We use the Welford method maintain a running average as it
+                //  is more numerically stable than the naive method
                 self.centroid_counts[nearest] += 1;
+                for (new_centroids.i(nearest)) |*v, feature_i| {
+                    const count = @intToFloat(DataT, self.centroid_counts[nearest]);
+                    v.* += (row[feature_i] - v.*) / count;
+                }
             }
 
-            // Generate new centroids such that they are in the center of the
-            //  points with their label
+            // The scratch_centroid_array now contains the mean of its member
+            //  points.  We do want to check for centroids with no members and
+            //  simply reinitialize them to a new random point
             for (self.centroid_counts) |count, centroid_i| {
                 if (count == 0) {
                     // unused centroid, reinit to a random point
                     self.randomCentroid(new_centroids.i(centroid_i));
-                } else {
-                    // average the accumulator
-                    for (new_centroids.i(centroid_i)) |*v| {
-                        v.* /= @intToFloat(DataT, count);
-                    }
                 }
-
-                // Copy the new centroids into the main buffer
-                std.mem.copy(DataT, self.centroid_array, self.scratch_centroid_array);
             }
+            // Copy the new centroids into the main buffer
+            std.mem.copy(DataT, self.centroid_array, self.scratch_centroid_array);
 
             return !converged;
         }
@@ -234,16 +246,20 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
 
 }
 
-/// Returns the square of the Euclidean distance between a and b.
-pub fn euclideanSquared(a: anytype, b: anytype) f32 {
-    std.debug.assert(a.len == b.len);
+/// Produces a function that takes vectors of T and returns the square of the
+///  Euclidean distance between a and b.
+pub fn EuclideanSquared(comptime T: type) fn([]const T, []const T) T {
+    return struct {
+        pub fn f(a: []const T, b: []const T) T {
+            std.debug.assert(a.len == b.len);
 
-    const E = @TypeOf(a[0]);
-    var accum: E = 0;
-    for (a) |av, i| {
-        accum += std.math.pow(E, av - b[i], 2);
-    }
-    return accum;
+            var accum: T = 0;
+            for (a) |av, i| {
+                accum += std.math.pow(T, av - b[i], 2);
+            }
+            return accum;
+        }
+    }.f;
 }
 
 fn Stride(comptime Slice: type) type {
@@ -286,4 +302,34 @@ fn stride(data: anytype, by: usize) Stride(@TypeOf(data)) {
         .index = 0,
         .s = by,
     };
+}
+
+test "basic usage" {
+    var allocator = std.testing.allocator;
+
+    const n_rows = 1_000;
+    const n_features = 2;
+    const n_centroids = 8;
+    var gen = std.rand.DefaultPrng.init(0).random;
+    var r = &gen;
+
+    var data = try allocator.alloc(f32, n_rows * n_features);
+    defer allocator.free(data);
+    for (data) |*v| {
+        v.* = r.float(f32) * 100;
+    }
+
+    var kmeans = try KMeans(f32, u8, comptime EuclideanSquared(f32)).init(allocator, r, data, n_features, n_centroids);
+    defer kmeans.deinit(allocator);
+    const converged = kmeans.run(100);
+    //std.debug.print("Converged? {}\n", .{ converged });
+    try std.testing.expect(converged);
+
+    //const writer = std.io.getStdOut().writer();
+    //try writer.print("x,y,label\n", .{});
+    //var strider = stride(data, 2);
+    //var row_i: usize = 0;
+    //while (strider.next()) |row| : (row_i += 1) {
+        //try writer.print("{d:.2},{d:.2},{}\n", .{ row[0], row[1], kmeans.labels[row_i] });
+    //}
 }
