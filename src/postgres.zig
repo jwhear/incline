@@ -72,6 +72,18 @@ pub const Database = struct {
         return self.exec(command);
     }
 
+    /// Executes command, expects a single field in the result, coerces the result
+    ///  to T, returns the value and clear the internal resultset.
+    pub fn execGetOne(self: *Database, comptime T: type, command: [:0]const u8) !T {
+        if (self.show_queries) {
+            std.debug.print("QUERY: {s}\n", .{command});
+        }
+        var res = try Result.init(pq.PQexec(self.conn, command.ptr));
+        defer res.clear();
+
+        return try res.oneValue(T);
+    }
+
     ///
     pub fn truncate(self: *Database, table_name: []const u8) !void {
         (try self.execFormat("TRUNCATE TABLE {s};", .{table_name})).clear();
@@ -194,12 +206,17 @@ pub const Result = struct {
     }
 
     ///
+    pub fn getAs(self: *const Result, comptime T: type, row: i32, col: i32) !T {
+        return self.coerce(T, self.get(row, col), self.isNull(row, col));
+    }
+
+    ///
     pub fn oneValue(self: *const Result, comptime T: type) !T {
         if (self.len() != 1 or self.nFields() != 1) {
             return error.expected_one_value;
         }
 
-        return self.coerce(T, self.get(0, 0), self.isNull(0, 0));
+        return self.getAs(T, 0, 0);
     }
 
     ///
@@ -268,10 +285,10 @@ pub const Result = struct {
 
     ///
     pub fn coerce(self: *const Result, comptime T: type,
-                  value: []const u8, is_null: bool) T {
+                  value: []const u8, is_null: bool) !T {
 
         // Handle string types simply
-        if (std.meta.trait.isZigString(T)) {
+        if (comptime std.meta.trait.isZigString(T)) {
             return value;
         }
 
@@ -280,10 +297,10 @@ pub const Result = struct {
             .Bool => return std.mem.eql(u8, value, "true"),
             .Int => |typ|
                 return if (typ.signedness == .signed)
-                        std.fmt.parseInt(T, value, 10)
+                        try std.fmt.parseInt(T, value, 10)
                        else
-                        std.fmt.parseUnsigned(T, value, 10),
-            .Float => return std.fmt.parseFloat(T, value),
+                        try std.fmt.parseUnsigned(T, value, 10),
+            .Float => return try std.fmt.parseFloat(T, value),
             .Optional => |typ|
                 return if (is_null) null else self.coerce(typ.child, value, false),
 
