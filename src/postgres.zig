@@ -92,14 +92,13 @@ pub const Database = struct {
         // We need to coerce all args to null-terminated strings
         // Any allocations only need to survive to the end of this function, so
         //  we'll use an Arena to make it easy
-        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        var arena = std.heap.ArenaAllocator.init(self.allocator.*);
         defer arena.deinit();
-        var ally = &arena.allocator;
 
         var values: [arg_fields.len]?[*:0]const u8 = undefined;
         inline for (arg_fields) |field,i| {
             const value = @field(args, field.name);
-            values[i] = try formatValueAsZ(ally, value);
+            values[i] = try formatValueAsZ(arena.allocator(), value);
 
         }
 
@@ -368,7 +367,7 @@ pub const FormatValueAsZError = error { formatValueAsZError };
 ///   [:0]const u8   => returned untouched
 ///   [:0]u8         => returned untouched
 ///   all other types => allocPrintZ()
-pub fn formatValueAsZ(allocator: *std.mem.Allocator, value: anytype) FormatValueAsZError!?[*:0]const u8 {
+pub fn formatValueAsZ(allocator: std.mem.Allocator, value: anytype) FormatValueAsZError!?[*:0]const u8 {
     if (@typeInfo(@TypeOf(value)) == .Optional) {
         if (value) |v| {
             return formatValueAsZ(allocator, v) catch return error.formatValueAsZError;
