@@ -92,7 +92,7 @@ pub const Database = struct {
         // We need to coerce all args to null-terminated strings
         // Any allocations only need to survive to the end of this function, so
         //  we'll use an Arena to make it easy
-        var arena = std.heap.ArenaAllocator.init(self.allocator.*);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
         var values: [arg_fields.len]?[*:0]const u8 = undefined;
