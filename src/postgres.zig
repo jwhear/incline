@@ -84,6 +84,40 @@ pub const Database = struct {
         return try res.oneValue(T);
     }
 
+    /// Executes a command, sending parameters separately from the query string.
+    /// Prefer using this over `execFormat`
+    pub fn execParams(self: *Database, command: [:0]const u8, args: anytype) !Result {
+        const arg_fields = std.meta.fields(@TypeOf(args));
+
+        // We need to coerce all args to null-terminated strings
+        // Any allocations only need to survive to the end of this function, so
+        //  we'll use an Arena to make it easy
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        var ally = &arena.allocator;
+
+        var values: [arg_fields.len]?[*:0]const u8 = undefined;
+        inline for (arg_fields) |field,i| {
+            const value = @field(args, field.name);
+            values[i] = try formatValueAsZ(ally, value);
+
+        }
+
+        return Result.init(
+            pq.PQexecParams(self.conn,
+                command.ptr,
+                values.len,
+                null, // types
+                &values[0],
+                null, // lengths
+                null, // formats
+                0
+            )
+        );
+    }
+
+    //TODO prepared statements?
+
     ///
     pub fn truncate(self: *Database, table_name: []const u8) !void {
         (try self.execFormat("TRUNCATE TABLE {s};", .{table_name})).clear();
@@ -326,3 +360,29 @@ pub const Column = struct {
     name: []const u8,
     data_type: []const u8 = "text",
 };
+
+pub const FormatValueAsZError = error { formatValueAsZError };
+
+/// Formats the supplied value as a suitable literal for Postgres
+///   null values    => "null"
+///   [:0]const u8   => returned untouched
+///   [:0]u8         => returned untouched
+///   all other types => allocPrintZ()
+pub fn formatValueAsZ(allocator: *std.mem.Allocator, value: anytype) FormatValueAsZError!?[*:0]const u8 {
+    if (@typeInfo(@TypeOf(value)) == .Optional) {
+        if (value) |v| {
+            return formatValueAsZ(allocator, v) catch return error.formatValueAsZError;
+        } else {
+            return null;
+        }
+    }
+
+    if (@TypeOf(value) == [:0]const u8 or @TypeOf(value) == [:0]u8) {
+        return value;
+    }
+
+    const fmt = comptime if (std.meta.trait.isZigString(@TypeOf(value))) "{s}" else "{}";
+
+    return std.fmt.allocPrintZ(allocator, fmt, .{ value }) catch return error.formatValueAsZError;
+}
+
