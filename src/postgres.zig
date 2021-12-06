@@ -7,11 +7,11 @@ const std = @import("std");
 ///
 pub const Database = struct {
     conn: *pq.PGconn = undefined,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
     show_queries: bool = false,
 
     ///
-    pub fn connect(info: []const u8, allocator: *std.mem.Allocator) !Database {
+    pub fn connect(info: []const u8, allocator: std.mem.Allocator) !Database {
         var conn = pq.PQconnectdb(info.ptr);
         if (pq.PQstatus(conn) != pq.CONNECTION_OK) {
             //std.debug.print("Failed to connect: \n{s}",
@@ -34,7 +34,7 @@ pub const Database = struct {
 
     ///
     pub fn connectProfile(profile: anytype,
-                          allocator: *std.mem.Allocator) !Database {
+                          allocator: std.mem.Allocator) !Database {
         var buf: [1024]u8 = undefined;
         const infoFmt = "postgresql://{[user]s}:{[password]s}@{[host]s}:{[port]}/{[database]s}";
         const info = try std.fmt.bufPrintZ(buf[0..], infoFmt, profile);
