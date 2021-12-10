@@ -231,6 +231,24 @@ pub const Result = struct {
         return pq.PQnfields(self.handle);
     }
 
+    /// Returns the number of the field or -1 if not present
+    pub fn fieldNumber(self: *const Result, name: [:0]const u8) i32 {
+        return pq.PQfnumber(self.handle, name.ptr);
+    }
+
+    /// Returns the name of the field or null if the number is out of range
+    pub fn fieldName(self: *const Result, n: i32) ?[:0]const u8 {
+        if (pq.PQfname(self.handle, n)) |name| {
+            return std.mem.span(name);
+        }
+        return null;
+    }
+
+    /// Returns an iterator that gives the field names
+    pub fn fieldNames(self: *const Result) FieldNameIterator {
+        return FieldNameIterator{ .res=self };
+    }
+
     ///
     pub fn get(self: *const Result, row: i32, col: i32) []const u8 {
         const data_len = @intCast(usize, pq.PQgetlength(self.handle, row, col));
@@ -241,6 +259,20 @@ pub const Result = struct {
     ///
     pub fn getAs(self: *const Result, comptime T: type, row: i32, col: i32) !T {
         return self.coerce(T, self.get(row, col), self.isNull(row, col));
+    }
+
+    ///
+    pub fn getField(self: *const Result, row: i32, field: [:0]const u8) ![]const u8 {
+        const n = self.fieldNumber(field);
+        if (n < 0) return error.invalid_field_name;
+        return self.get(row, n);
+    }
+
+    ///
+    pub fn getFieldAs(self: *const Result, comptime T: type, row: i32, field: [:0]const u8) ![]const u8 {
+        const n = self.fieldNumber(field);
+        if (n < 0) return error.invalid_field_name;
+        return self.getAs(T, row, n);
     }
 
     ///
@@ -280,20 +312,22 @@ pub const Result = struct {
     ///
     fn rowAsStruct(self: *const Result, comptime T: type, row: i32) !T {
         const fields = comptime std.meta.fields(T);
-        if (fields.len != self.nFields) {
+        if (fields.len != self.nFields()) {
             return error.field_count_not_equal;
         }
 
         var ret: T = undefined;
         const useOrdering = comptime std.meta.trait.isTuple(T);
         inline for (fields) |f, i| {
-            const column = if (useOrdering) @intCast(i32, i) else try self.fieldNumber(f.name);
+            var fieldNameZ: [f.name.len:0]u8 = undefined;
+            std.mem.copy(u8, &fieldNameZ, f.name);
+            const column = if (useOrdering) @intCast(i32, i) else self.fieldNumber(&fieldNameZ);
             if (column < 0) {
                 std.debug.print("Failed to find a field named '{s}' in the result set\n", .{f.name});
                 return error.unmapped_field;
             }
             const rawValue = self.get(row, column);
-            @field(ret, f.name) = try self.coerce(f.type, rawValue, self.isNull(row, column));
+            @field(ret, f.name) = try self.coerce(f.field_type, rawValue, self.isNull(row, column));
         }
         return ret;
     }
@@ -316,9 +350,13 @@ pub const Result = struct {
         return pq.PQgetisnull(self.handle, row, col) == 1;
     }
 
+    pub const CoerceError = error {
+        cannot_coerce
+    };
+
     ///
     pub fn coerce(self: *const Result, comptime T: type,
-                  value: []const u8, is_null: bool) !T {
+                  value: []const u8, is_null: bool) CoerceError!T {
 
         // Handle string types simply
         if (comptime std.meta.trait.isZigString(T)) {
@@ -326,23 +364,22 @@ pub const Result = struct {
         }
 
         const ti = comptime @typeInfo(T);
-        switch (ti) {
+        return switch (ti) {
             .Bool => return std.mem.eql(u8, value, "true"),
             .Int => |typ|
-                return if (typ.signedness == .signed)
-                        try std.fmt.parseInt(T, value, 10)
-                       else
-                        try std.fmt.parseUnsigned(T, value, 10),
-            .Float => return try std.fmt.parseFloat(T, value),
+                if (typ.signedness == .signed)
+                    std.fmt.parseInt(T, value, 10) catch error.cannot_coerce
+                else
+                    std.fmt.parseUnsigned(T, value, 10) catch error.cannot_coerce,
+            .Float => try std.fmt.parseFloat(T, value),
             .Optional => |typ|
-                return if (is_null) null else self.coerce(typ.child, value, false),
+                if (is_null) null else self.coerce(typ.child, value, false),
 
-            .Enum => return std.meta.stringToEnum(T, value),
-            else => |typ| {
-                std.debug.print("Cannot coerce to type {s}\n", .{typ});
-                return error.cannot_coerce;
-            }
-        }
+            .Enum => std.meta.stringToEnum(T, value) orelse error.cannot_coerce,
+            else =>  @compileError("Cannot coerce to type "++@typeName(T))
+        } catch {
+            return error.cannot_coerce;
+        };
     }
 
     /// Fills `values` with a column. `values.len` must be equal to the number of rows.
@@ -351,6 +388,12 @@ pub const Result = struct {
             const row = @intCast(i32, i);
             v.* = try self.coerce(E, self.get(row, column), self.isNull(row, column));
         }
+    }
+
+    /// Returns a view of this Result with iteration and where each row is
+    ///  coerced to a `Row`
+    pub fn typed(self: *const Result, comptime Row: type) TypedResult(Row) {
+        return TypedResult(Row){ .result=self };
     }
 
 };
@@ -385,3 +428,30 @@ pub fn formatValueAsZ(allocator: std.mem.Allocator, value: anytype) FormatValueA
     return std.fmt.allocPrintZ(allocator, fmt, .{ value }) catch return error.formatValueAsZError;
 }
 
+///
+pub const FieldNameIterator = struct {
+    res: *const Result,
+    i: i32 = 0,
+
+    pub fn next(self: *FieldNameIterator) ?[:0]const u8 {
+        defer self.i += 1;
+        return self.res.fieldName(self.i);
+    }
+};
+
+///
+pub fn TypedResult(comptime Row: type) type {
+    return struct {
+        const Self = @This();
+
+        result: *const Result,
+        row_i: i32 = 0,
+
+        ///
+        pub fn next(self: *Self) !?Row {
+            if (self.row_i >= self.result.len()) return null;
+            defer self.row_i += 1;
+            return try self.result.rowAs(Row, self.row_i);
+        }
+    };
+}
