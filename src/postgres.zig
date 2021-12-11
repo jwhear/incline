@@ -115,6 +115,14 @@ pub const Database = struct {
         );
     }
 
+    ///
+    pub fn execParamsNoResult(self: *Database, command: [:0]const u8, args: anytype) !void {
+        // We'll instantiate a Result because that's where the error handling
+        //  takes place
+        var res = try self.execParams(command, args);
+        res.clear();
+    }
+
     //TODO prepared statements?
 
     ///
