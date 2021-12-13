@@ -95,11 +95,12 @@ pub const Database = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         defer arena.deinit();
 
+        var allocator = arena.allocator();
+
         var values: [arg_fields.len]?[*:0]const u8 = undefined;
         inline for (arg_fields) |field,i| {
             const value = @field(args, field.name);
-            values[i] = try formatValueAsZ(arena.allocator(), value);
-
+            values[i] = try formatValueAsZ(allocator, value);
         }
 
         return Result.init(
