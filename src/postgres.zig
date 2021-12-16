@@ -243,7 +243,6 @@ pub const Result = struct {
     /// Returns the number of the field or -1 if not present
     pub fn fieldNumber(self: *const Result, name: [:0]const u8) i32 {
         const ret = pq.PQfnumber(self.handle, name.ptr);
-        std.debug.print("fieldNumber: '{s}'({}) => {}\n", .{ name, name.len, ret });
         return ret;
     }
 
