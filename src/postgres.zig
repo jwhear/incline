@@ -242,7 +242,9 @@ pub const Result = struct {
 
     /// Returns the number of the field or -1 if not present
     pub fn fieldNumber(self: *const Result, name: [:0]const u8) i32 {
-        return pq.PQfnumber(self.handle, name.ptr);
+        const ret = pq.PQfnumber(self.handle, name.ptr);
+        std.debug.print("fieldNumber: '{s}'({}) => {}\n", .{ name, name.len, ret });
+        return ret;
     }
 
     /// Returns the name of the field or null if the number is out of range
@@ -278,7 +280,7 @@ pub const Result = struct {
     }
 
     ///
-    pub fn getFieldAs(self: *const Result, comptime T: type, row: i32, field: [:0]const u8) ![]const u8 {
+    pub fn getFieldAs(self: *const Result, comptime T: type, row: i32, field: [:0]const u8) !T {
         const n = self.fieldNumber(field);
         if (n < 0) return error.invalid_field_name;
         return self.getAs(T, row, n);
@@ -321,22 +323,25 @@ pub const Result = struct {
     ///
     fn rowAsStruct(self: *const Result, comptime T: type, row: i32) !T {
         const fields = comptime std.meta.fields(T);
-        if (fields.len != self.nFields()) {
-            return error.field_count_not_equal;
-        }
-
         var ret: T = undefined;
-        const useOrdering = comptime std.meta.trait.isTuple(T);
-        inline for (fields) |f, i| {
-            var fieldNameZ: [f.name.len:0]u8 = undefined;
-            std.mem.copy(u8, &fieldNameZ, f.name);
-            const column = if (useOrdering) @intCast(i32, i) else self.fieldNumber(&fieldNameZ);
-            if (column < 0) {
-                std.debug.print("Failed to find a field named '{s}' in the result set\n", .{f.name});
-                return error.unmapped_field;
+
+        // If a tuple type we need to simply use ordering
+        if (comptime std.meta.trait.isTuple(T)) {
+            if (fields.len != self.nFields()) {
+                return error.field_count_not_equal;
             }
-            const rawValue = self.get(row, column);
-            @field(ret, f.name) = try self.coerce(f.field_type, rawValue, self.isNull(row, column));
+
+            inline for (fields) |f, i| {
+                @field(ret, f.name) = try self.getAs(f.field_type, row, @as(i32, i));
+            }
+        } else {
+            // Otherwise use name to associate
+            inline for (fields) |f| {
+                // We need field name as a null-terminated string for lookup
+                var fz: [f.name.len:0]u8 = std.mem.zeroes([f.name.len:0]u8);
+                std.mem.copy(u8, &fz, f.name);
+                @field(ret, f.name) = try self.getFieldAs(f.field_type, row, &fz);
+            }
         }
         return ret;
     }
@@ -420,7 +425,10 @@ pub const FormatValueAsZError = error { formatValueAsZError };
 ///   [:0]u8         => returned untouched
 ///   all other types => allocPrintZ()
 pub fn formatValueAsZ(allocator: std.mem.Allocator, value: anytype) FormatValueAsZError!?[*:0]const u8 {
-    if (@typeInfo(@TypeOf(value)) == .Optional) {
+    const T = @TypeOf(value);
+    const TI = @typeInfo(T);
+
+    if (TI == .Optional) {
         if (value) |v| {
             return formatValueAsZ(allocator, v) catch return error.formatValueAsZError;
         } else {
@@ -428,11 +436,15 @@ pub fn formatValueAsZ(allocator: std.mem.Allocator, value: anytype) FormatValueA
         }
     }
 
-    if (@TypeOf(value) == [:0]const u8 or @TypeOf(value) == [:0]u8) {
+    if (T == [:0]const u8 or T == [:0]u8) {
         return value;
     }
 
-    const fmt = comptime if (std.meta.trait.isZigString(@TypeOf(value))) "{s}" else "{}";
+    if (TI == .Enum) {
+        return @tagName(value);
+    }
+
+    const fmt = comptime if (std.meta.trait.isZigString(T)) "{s}" else "{}";
 
     return std.fmt.allocPrintZ(allocator, fmt, .{ value }) catch return error.formatValueAsZError;
 }
