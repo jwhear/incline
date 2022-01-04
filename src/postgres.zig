@@ -87,6 +87,10 @@ pub const Database = struct {
     /// Executes a command, sending parameters separately from the query string.
     /// Prefer using this over `execFormat`
     pub fn execParams(self: *Database, command: [:0]const u8, args: anytype) !Result {
+        if (self.show_queries) {
+            std.debug.print("QUERY: {s}\n", .{command});
+        }
+
         const arg_fields = std.meta.fields(@TypeOf(args));
 
         // We need to coerce all args to null-terminated strings
@@ -267,9 +271,22 @@ pub const Result = struct {
     }
 
     ///
+    pub fn getCopy(self: *const Result, allocator: std.mem.Allocator, row: i32, col: i32) ![] u8 {
+        const data_len = @intCast(usize, pq.PQgetlength(self.handle, row, col));
+        const data = pq.PQgetvalue(self.handle, row, col);
+        return try allocator.dupe(u8, data[0..data_len]);
+    }
+
+    ///
     pub fn getAs(self: *const Result, comptime T: type, row: i32, col: i32) !T {
         return self.coerce(T, self.get(row, col), self.isNull(row, col));
     }
+
+    ///
+    pub fn getCopyAs(self: *const Result, allocator: std.mem.Allocator, comptime T: type, row: i32, col: i32) !T {
+        return self.coerce(T, try self.getCopy(allocator, row, col), self.isNull(row, col));
+    }
+
 
     ///
     pub fn getField(self: *const Result, row: i32, field: [:0]const u8) ![]const u8 {
@@ -283,6 +300,13 @@ pub const Result = struct {
         const n = self.fieldNumber(field);
         if (n < 0) return error.invalid_field_name;
         return self.getAs(T, row, n);
+    }
+
+    ///
+    pub fn getCopyFieldAs(self: *const Result, allocator: std.mem.Allocator, comptime T: type, row: i32, field: [:0]const u8) !T {
+        const n = self.fieldNumber(field);
+        if (n < 0) return error.invalid_field_name;
+        return self.getCopyAs(allocator, T, row, n);
     }
 
     ///
@@ -304,6 +328,15 @@ pub const Result = struct {
     }
 
     ///
+    pub fn rowCopyAs(self: *const Result, allocator: std.mem.Allocator, comptime T: type, row: i32) !T {
+        return switch (@typeInfo(T)) {
+            .Struct => self.rowCopyAsStruct(allocator, T, row),
+            .Array => self.rowCopyAsArray(allocator, T, row),
+            else => @compileError("Cannot coerce a row to a "++@typeName(T)),
+        };
+    }
+
+    ///
     fn rowAsArray(self: *const Result, comptime T: type, row: i32) !T {
         const TI = @typeInfo(T);
         if (TI.Array.len != self.nFields) {
@@ -314,6 +347,22 @@ pub const Result = struct {
         var ret: T = undefined;
         for (ret) |*v, col| {
             const rawValue = self.get(row, col);
+            v.* = try self.coerce(E, rawValue, self.isNull(row, col));
+        }
+        return ret;
+    }
+
+    ///
+    fn rowCopyAsArray(self: *const Result, allocator: std.mem.Allocator, comptime T: type, row: i32) !T {
+        const TI = @typeInfo(T);
+        if (TI.Array.len != self.nFields) {
+            return error.field_count_not_equal;
+        }
+        const E = TI.Array.child;
+
+        var ret: T = undefined;
+        for (ret) |*v, col| {
+            const rawValue = self.getCopy(allocator, row, col);
             v.* = try self.coerce(E, rawValue, self.isNull(row, col));
         }
         return ret;
@@ -340,6 +389,32 @@ pub const Result = struct {
                 var fz: [f.name.len:0]u8 = std.mem.zeroes([f.name.len:0]u8);
                 std.mem.copy(u8, &fz, f.name);
                 @field(ret, f.name) = try self.getFieldAs(f.field_type, row, &fz);
+            }
+        }
+        return ret;
+    }
+
+    ///
+    fn rowCopyAsStruct(self: *const Result, allocator: std.mem.Allocator, comptime T: type, row: i32) !T {
+        const fields = comptime std.meta.fields(T);
+        var ret: T = undefined;
+
+        // If a tuple type we need to simply use ordering
+        if (comptime std.meta.trait.isTuple(T)) {
+            if (fields.len != self.nFields()) {
+                return error.field_count_not_equal;
+            }
+
+            inline for (fields) |f, i| {
+                @field(ret, f.name) = try self.getCopyAs(allocator, f.field_type, row, @as(i32, i));
+            }
+        } else {
+            // Otherwise use name to associate
+            inline for (fields) |f| {
+                // We need field name as a null-terminated string for lookup
+                var fz: [f.name.len:0]u8 = std.mem.zeroes([f.name.len:0]u8);
+                std.mem.copy(u8, &fz, f.name);
+                @field(ret, f.name) = try self.getCopyFieldAs(allocator, f.field_type, row, &fz);
             }
         }
         return ret;
