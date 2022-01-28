@@ -196,7 +196,7 @@ pub const Reader = struct {
     ///
     tokens: *BufferTokenizer,
     ///
-    allocator: *Allocator,
+    allocator: Allocator,
     ///
     current: []Field,
     ///
@@ -205,7 +205,7 @@ pub const Reader = struct {
     unescapedStrings: std.ArrayList(Field),
 
     ///
-    pub fn init(allocator: *Allocator, tokens: *BufferTokenizer, hasHeader: bool) !Reader {
+    pub fn init(allocator: Allocator, tokens: *BufferTokenizer, hasHeader: bool) !Reader {
         var ret = Reader{
             .tokens = tokens,
             .allocator = allocator,
@@ -232,7 +232,7 @@ pub const Reader = struct {
     }
 
     ///
-    pub fn initWithHeader(allocator: *Allocator, tokens: *BufferTokenizer, header: []Field) !Reader {
+    pub fn initWithHeader(allocator: Allocator, tokens: *BufferTokenizer, header: []Field) !Reader {
         var ret = Reader{
             .tokens = tokens,
             .allocator = allocator,
@@ -354,7 +354,7 @@ fn expectRow(witness: anytype, subj: ?[]Field) !void {
 test "basic test of Reader" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const allocator = &arena.allocator;
+    const allocator = arena.allocator();
 
     const source =
     \\field 1,field 2,  field 3
@@ -459,7 +459,7 @@ fn expectStruct(witness: anytype, t: anytype) !void {
 test "StructReader" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    const allocator = &arena.allocator;
+    const allocator = arena.allocator();
 
     const source =
     \\f1,f2,f3
@@ -593,7 +593,7 @@ fn indexOfString(haystack: [][]const u8, needle: []const u8) ?usize {
 }
 
 ///
-pub fn readStructsFrom(comptime T: type, allocator: *Allocator, path: []const u8) !StructReader(T) {
+pub fn readStructsFrom(comptime T: type, allocator: Allocator, path: []const u8) !StructReader(T) {
     var tokens = try BufferTokenizer.fromPath(path);
     var reader = try Reader.init(allocator, &tokens, true);
     return StructReader(T).init(&reader);
