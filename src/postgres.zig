@@ -81,7 +81,10 @@ pub const Database = struct {
         var res = try Result.init(pq.PQexec(self.conn, command.ptr));
         defer res.clear();
 
-        return try res.oneValue(T);
+        // If a string, make sure we copy before clearing the result
+        return if (std.meta.trait.isZigString(T))
+                    try self.allocator.dupe(u8, try res.oneValue(T))
+               else try res.oneValue(T);
     }
 
     ///
