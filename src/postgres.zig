@@ -43,6 +43,21 @@ pub const Database = struct {
     }
 
     ///
+    pub fn connectAddress(address: std.net.Address, profile: anytype,
+                          allocator: std.mem.Allocator) !Database {
+        var buf: [1024]u8 = undefined;
+        const infoFmt = "postgresql://{[user]s}:{[password]s}@{[address]}/{[database]s}";
+        const info = try std.fmt.bufPrintZ(buf[0..], infoFmt, .{
+            .user=profile.user,
+            .password=profile.password,
+            .database=profile.database,
+            .address=address,
+        });
+
+        return Database.connect(info, allocator);
+    }
+
+    ///
     pub fn finish(self: *Database) void {
         pq.PQfinish(self.conn);
     }
