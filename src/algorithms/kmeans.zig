@@ -11,7 +11,7 @@ const utils = @import("../matrix_utils.zig");
 ///
 /// The type returned should be initialized with either `init` or `initNoAlloc`.
 /// If using `initNoAlloc`, the caller must allocate certain arrays (see the
-///  documentation for (`initNoAlloc`) and should _not_ call `deinit`.
+///  documentation for `initNoAlloc`) and should _not_ call `deinit`.
 /// If using `init`, the provided allocator will be used and a matching call
 ///  to `deinit` should be performed when the computation is done and the
 ///  results are no longer needed.  Note that this type performs no heap allocations
@@ -46,8 +46,8 @@ const utils = @import("../matrix_utils.zig");
 /// // Provide these arrays however you like (e.g. reusing previous allocations)
 /// kmeans.labels = try myAllocator.alloc(u8, n_rows);
 /// kmeans.centroid_array = try myAllocator.alloc(DataT, n_centroids * n_features);
-/// kmeans.centroid_counts = myAllocator.alloc(usize, n_centroids);
-/// kmeans.scratch_centroid_array = myAllocator.alloc(DataT, n_centroids * n_features);
+/// kmeans.centroid_counts = try myAllocator.alloc(usize, n_centroids);
+/// kmeans.scratch_centroid_array = try myAllocator.alloc(DataT, n_centroids * n_features);
 ///
 /// // The built-in method picks random points from `data` for the initial centroids
 /// //  but you could provide them yourself using some fancy technique or other
@@ -210,7 +210,7 @@ pub fn KMeans(comptime DataT: type, comptime LabelT: type, comptime distance: fn
                 }
 
                 // Add this point to the accumulator for this centroid
-                // We use the Welford method maintain a running average as it
+                // We use the Welford method to maintain a running average as it
                 //  is more numerically stable than the naive method
                 self.centroid_counts[nearest] += 1;
                 for (new_centroids.i(nearest)) |*v, feature_i| {
