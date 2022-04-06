@@ -1,5 +1,5 @@
 const pq = @cImport({
-    @cInclude("postgresql/libpq-fe.h");
+    @cInclude("libpq-fe.h");
 });
 
 const std = @import("std");
@@ -268,6 +268,25 @@ pub const Result = struct {
         return ret;
     }
 
+    // Support function for public functions taking a column: translates various
+    //  valid types for a column into the actual index value that PQ understands
+    fn getColumnIndex(self: *const Result, col: anytype) @TypeOf(error.invalid_field_name) !i32 {
+        const T = @TypeOf(col);
+
+        // If col is a string with null termination, e.g. a literal, decay it to a slice
+        if (comptime std.meta.trait.isZigString(T) and std.meta.sentinel(T) == @as(u8, 0) and T != [:0]const u8) {
+            return self.getColumnIndex(@as([:0]const u8, col));
+        }
+
+        const ret = switch (T) {
+            i32 => col,
+            [:0]const u8 => self.fieldNumber(col),
+            else =>@compileError("Cannot specify column with a "++@typeName(T)),
+        };
+        if (ret < 0) return error.invalid_field_name;
+        return ret;
+    }
+
     /// Returns the name of the field or null if the number is out of range
     pub fn fieldName(self: *const Result, n: i32) ?[:0]const u8 {
         if (pq.PQfname(self.handle, n)) |name| {
@@ -282,27 +301,26 @@ pub const Result = struct {
     }
 
     ///
-    pub fn get(self: *const Result, row: i32, col: i32) []const u8 {
-        const data_len = @intCast(usize, pq.PQgetlength(self.handle, row, col));
-        const data = pq.PQgetvalue(self.handle, row, col);
+    pub fn get(self: *const Result, row: i32, col: anytype) ![]const u8 {
+        const col_i = try self.getColumnIndex(col);
+        const data_len = @intCast(usize, pq.PQgetlength(self.handle, row, col_i));
+        const data = pq.PQgetvalue(self.handle, row, col_i);
         return data[0..data_len];
     }
 
     ///
-    pub fn getCopy(self: *const Result, allocator: std.mem.Allocator, row: i32, col: i32) ![] u8 {
-        const data_len = @intCast(usize, pq.PQgetlength(self.handle, row, col));
-        const data = pq.PQgetvalue(self.handle, row, col);
-        return try allocator.dupe(u8, data[0..data_len]);
+    pub fn getCopy(self: *const Result, allocator: std.mem.Allocator, row: i32, col: anytype) ![] u8 {
+        return try allocator.dupe(u8, try self.get(row, col));
     }
 
     ///
-    pub fn getAs(self: *const Result, comptime T: type, row: i32, col: i32) !T {
-        return self.coerce(T, self.get(row, col), self.isNull(row, col));
+    pub fn getAs(self: *const Result, comptime T: type, row: i32, col: anytype) !T {
+        return self.coerce(T, try self.get(row, col), try self.isNull(row, col));
     }
 
     ///
-    pub fn getCopyAs(self: *const Result, allocator: std.mem.Allocator, comptime T: type, row: i32, col: i32) !T {
-        return self.coerce(T, try self.getCopy(allocator, row, col), self.isNull(row, col));
+    pub fn getCopyAs(self: *const Result, allocator: std.mem.Allocator, comptime T: type, row: i32, col: anytype) !T {
+        return self.coerce(T, try self.getCopy(allocator, row, col), try self.isNull(row, col));
     }
 
 
@@ -365,7 +383,7 @@ pub const Result = struct {
         var ret: T = undefined;
         for (ret) |*v, col| {
             const rawValue = self.get(row, col);
-            v.* = try self.coerce(E, rawValue, self.isNull(row, col));
+            v.* = try self.coerce(E, rawValue, try self.isNull(row, col));
         }
         return ret;
     }
@@ -381,7 +399,7 @@ pub const Result = struct {
         var ret: T = undefined;
         for (ret) |*v, col| {
             const rawValue = self.getCopy(allocator, row, col);
-            v.* = try self.coerce(E, rawValue, self.isNull(row, col));
+            v.* = try self.coerce(E, rawValue, try self.isNull(row, col));
         }
         return ret;
     }
@@ -447,13 +465,13 @@ pub const Result = struct {
 
         for (values) |*v, i| {
             const column = @intCast(i32, i);
-            v.* = try self.coerce(E, self.get(row, column), self.isNull(row, column));
+            v.* = try self.coerce(E, self.get(row, column), try self.isNull(row, column));
         }
     }
 
     ///
-    pub fn isNull(self: *const Result, row: i32, col: i32) bool {
-        return pq.PQgetisnull(self.handle, row, col) == 1;
+    pub fn isNull(self: *const Result, row: i32, col: anytype) !bool {
+        return pq.PQgetisnull(self.handle, row, try self.getColumnIndex(col)) == 1;
     }
 
     pub const CoerceError = error {
@@ -492,7 +510,7 @@ pub const Result = struct {
     pub fn fillColumnSlice(self: *const Result, comptime E: type, values: []E, column: i32) !void {
         for (values) |*v, i| {
             const row = @intCast(i32, i);
-            v.* = try self.coerce(E, self.get(row, column), self.isNull(row, column));
+            v.* = try self.coerce(E, self.get(row, column), try self.isNull(row, column));
         }
     }
 
