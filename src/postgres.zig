@@ -495,7 +495,7 @@ pub const Result = struct {
                     std.fmt.parseInt(T, value, 10) catch error.cannot_coerce
                 else
                     std.fmt.parseUnsigned(T, value, 10) catch error.cannot_coerce,
-            .Float => try std.fmt.parseFloat(T, value),
+            .Float => std.fmt.parseFloat(T, value) catch error.cannot_coerce,
             .Optional => |typ|
                 if (is_null) null else self.coerce(typ.child, value, false),
 
